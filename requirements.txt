@@ -1,0 +1,11 @@
+langchain-core
+langchain-groq
+youtube-transcript-api
+python-dotenv
+langchain-huggingface
+sentence-transformers
+langchain-pinecone
+pinecone
+torch
+transformers
+huggingface-hub
