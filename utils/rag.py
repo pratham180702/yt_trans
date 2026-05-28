@@ -88,7 +88,7 @@ def fetch_transcript(video_id):
     logger.info(f"[fetch_transcript] auto-caption langs (first 10): {list(auto_subs.keys())[:10]}")
 
     # Preferred language prefixes in order (handles codes like en-en-IN, hi-en-IN)
-    preferred_prefixes = ["en-IN", "en", "hi"]
+    preferred_prefixes = ["en-IN", "en", "hi", "en-in"]
 
     raw_entries = None
     matched_lang = None
