@@ -55,6 +55,23 @@ def insert_bot(youtube_url, video_id):
     return bot
 
 
+def get_chat_messages(bot_id, limit=10):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT role, content
+    FROM chat_messages
+    WHERE bot_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+    """, (bot_id, limit))
+
+    messages = cursor.fetchall()
+    conn.close()
+
+    return list(reversed(messages))
+
 def get_bot_by_id(bot_id):
     conn = get_connection()
     cursor = conn.cursor()

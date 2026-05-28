@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from database import create_tables, insert_bot, get_bot_by_id, save_chat_message
+from database import create_tables, insert_bot, get_bot_by_id, save_chat_message, get_chat_messages
 from utils.rag import get_youtube_video_id, make_yt_video_rag
 
 app = FastAPI()
@@ -38,6 +38,23 @@ def create_bot(request: CreateBotRequest):
     }
 
 
+def get_chat_history(bot_id, limit=10):
+    messages = get_chat_messages(bot_id, limit=limit)
+
+    history = []
+
+    for msg in messages:
+        role = msg["role"]          # user / assistant
+        content = msg["content"]
+
+        if role == "user":
+            history.append(f"User: {content}")
+        elif role == "assistant":
+            history.append(f"Assistant: {content}")
+
+    return "\n".join(history)
+
+
 @app.post("/chat")
 def chat(request: ChatRequest):
     bot = get_bot_by_id(request.bot_id)
@@ -49,7 +66,12 @@ def chat(request: ChatRequest):
 
     rag_chain = make_yt_video_rag(youtube_url)
 
-    answer = rag_chain.invoke(request.question)
+    chat_history = get_chat_history(request.bot_id, limit=10)
+
+    answer = rag_chain.invoke({
+        "user_query": request.question,
+        "chat_history": chat_history
+    })
 
     save_chat_message(request.bot_id, "user", request.question)
     save_chat_message(request.bot_id, "assistant", answer)

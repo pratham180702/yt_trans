@@ -207,23 +207,42 @@ def get_index_name(video_id):
 
 
 def create_index_if_not_exists(pc, index_name):
-    existing_indexes = pc.list_indexes().names()
+    # Get the current list of indexes
+    indexes_info = pc.list_indexes()
+    existing_indexes = [idx.name for idx in indexes_info]
 
-    if index_name not in existing_indexes:
-        pc.create_index(
-            name=index_name,
-            dimension=384,
-            metric="cosine",
-            spec=ServerlessSpec(
-                cloud="aws",
-                region="us-east-1"
-            )
+    # If the index we want already exists, we are done
+    if index_name in existing_indexes:
+        logger.info(f"Index {index_name} already exists.")
+        return False
+
+    # Check if we have reached the limit (5 for Starter/Default projects)
+    if len(existing_indexes) >= 5:
+        # Sort or just pick the first one to delete. 
+        # Pinecone list usually returns them in a stable order.
+        oldest_index_name = existing_indexes[0]
+        
+        logger.warning(f"Index limit (5) reached. Deleting oldest index: {oldest_index_name}")
+        pc.delete_index(oldest_index_name)
+        
+        # Wait a few seconds for Pinecone to register the deletion
+        time.sleep(5)
+
+    # Create the new index
+    logger.info(f"Creating new index: {index_name}")
+    pc.create_index(
+        name=index_name,
+        dimension=384,
+        metric="cosine",
+        spec=ServerlessSpec(
+            cloud="aws",
+            region="us-east-1"
         )
+    )
 
-        time.sleep(10)
-        return True
-
-    return False
+    # Give Pinecone time to initialize the DNS/DNS for the new index
+    time.sleep(10)
+    return True
 
 
 def get_vectorstore(index_name, embeddings):
@@ -276,22 +295,21 @@ def get_prompt():
         template="""
 You are a helpful YouTube video assistant.
 
-Review the provided context, which contains timestamp in seconds and transcript content.
+Previous conversation:
+{chat_history}
 
-Rules:
-1. Keep your tone natural and friendly.
-2. Do not show unnecessary technical details.
-3. Keep the answer precise and friendly.
-4. If the answer is not present in the context, simply say: "I don't know".
-5. For each important point, mention which timestamp/content supports your answer.
-6. Give short answers unless details are required.
+Video context:
+{context}
 
 User Query: {user_query}
 
-Context:
-{context}
+Rules:
+1. Answer using video context.
+2. Use previous conversation only to understand follow-up questions.
+3. If answer is not in video context, say "I don't know".
+4. Mention timestamps when useful.
 """,
-        input_variables=["user_query", "context"]
+        input_variables=["user_query", "context", "chat_history"]
     )
 
 
@@ -317,8 +335,11 @@ def get_rag_chain(video_id):
 
     rag_chain = (
         {
-            "context": retriever | format_docs,
-            "user_query": RunnablePassthrough()
+            "context": lambda x: format_docs(
+                retriever.invoke(x["user_query"])
+            ),
+            "user_query": lambda x: x["user_query"],
+            "chat_history": lambda x: x["chat_history"]
         }
         | prompt
         | llm
