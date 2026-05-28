@@ -12,23 +12,10 @@ from pinecone import Pinecone, ServerlessSpec
 from urllib.parse import urlparse, parse_qs
 import os
 import time
+import requests
 
 INDEX_PREFIX = "youtube-rag-index"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
-def get_youtube_video_id(url):
-    parsed_url = urlparse(url)
-
-    # Normal YouTube URL
-    if parsed_url.hostname in ["www.youtube.com", "youtube.com"]:
-        return parse_qs(parsed_url.query).get("v", [None])[0]
-
-    # Shortened youtu.be URL
-    if parsed_url.hostname == "youtu.be":
-        return parsed_url.path.lstrip("/")
-
-    return None
-
 
 def get_youtube_video_id(url):
     parsed_url = urlparse(url)
@@ -43,17 +30,20 @@ def get_youtube_video_id(url):
 
 
 def fetch_transcript(video_id):
-    # On cloud hosts (AWS, GCP, etc.) YouTube blocks requests by IP.
-    # Authenticating with a cookies file lets requests pass through.
-    cookies_path = os.environ.get(
-        "YOUTUBE_COOKIES_PATH",
-        os.path.join(os.path.dirname(__file__), "youtube_cookies.txt")
-    )
+    # On cloud hosts (AWS, GCP, etc.) YouTube blocks datacenter IPs.
+    # Use a residential proxy via YOUTUBE_PROXY_URL env var to bypass this.
+    # Format: http://username:password@proxy-host:port
+    proxy_url = os.environ.get("YOUTUBE_PROXY_URL")
 
-    if os.path.exists(cookies_path):
-        ytt_api = YouTubeTranscriptApi(cookie_path=cookies_path)
+    if proxy_url:
+        session = requests.Session()
+        session.proxies.update({
+            "http": proxy_url,
+            "https": proxy_url,
+        })
+        ytt_api = YouTubeTranscriptApi(http_client=session)
     else:
-        # Fallback — will work locally but may fail on cloud IPs
+        # No proxy — works locally, but will be blocked on most cloud IPs
         ytt_api = YouTubeTranscriptApi()
 
     return ytt_api.fetch(video_id, languages=["en-IN", "en", "hi"])
