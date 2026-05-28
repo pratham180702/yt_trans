@@ -2,17 +2,21 @@ from langchain_core.prompts import PromptTemplate
 from langchain_groq import ChatGroq
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import *
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 load_dotenv()
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
+# from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 from urllib.parse import urlparse, parse_qs
 import os
 import time
+import logging
+import yt_dlp
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 INDEX_PREFIX = "youtube-rag-index"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -29,31 +33,111 @@ def get_youtube_video_id(url):
     return None
 
 
+class _Snippet:
+    """Duck-typed snippet compatible with transcript_to_docs."""
+    def __init__(self, text, start):
+        self.text = text
+        self.start = start
+
+
+class _FetchedTranscript:
+    """Duck-typed transcript compatible with transcript_to_docs."""
+    def __init__(self, snippets):
+        self.snippets = snippets
+
+
 def fetch_transcript(video_id):
-    # On cloud hosts (AWS, GCP, etc.) YouTube blocks datacenter IPs.
-    # Option 1: Set WEBSHARE_USERNAME + WEBSHARE_PASSWORD for Webshare residential proxies
-    # Option 2: Set YOUTUBE_PROXY_URL=http://user:pass@host:port for any generic proxy
-    webshare_user = os.environ.get("WEBSHARE_USERNAME")
-    webshare_pass = os.environ.get("WEBSHARE_PASSWORD")
-    proxy_url = os.environ.get("YOUTUBE_PROXY_URL")
+    """Fetch transcript using yt-dlp with tv_embedded client (no PO token needed)."""
+    url = f"https://www.youtube.com/watch?v={video_id}"
 
-    if webshare_user and webshare_pass:
-        proxy_config = WebshareProxyConfig(
-            proxy_username=webshare_user,
-            proxy_password=webshare_pass,
-        )
-        ytt_api = YouTubeTranscriptApi(proxies=proxy_config)
-    elif proxy_url:
-        proxy_config = GenericProxyConfig(
-            http=proxy_url,
-            https=proxy_url,
-        )
-        ytt_api = YouTubeTranscriptApi(proxies=proxy_config)
-    else:
-        # No proxy — works locally, but will be blocked on most cloud IPs
-        ytt_api = YouTubeTranscriptApi()
+    cookies_path = os.environ.get(
+        "YOUTUBE_COOKIES_PATH",
+        os.path.join(os.path.dirname(__file__), "youtube_cookies.txt")
+    )
 
-    return ytt_api.fetch(video_id, languages=["en-IN", "en", "hi"])
+    logger.info(f"[fetch_transcript] video_id={video_id}")
+    logger.info(f"[fetch_transcript] cookies file exists: {os.path.exists(cookies_path)}")
+
+    ydl_opts = {
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": ["all"],
+        "subtitlesformat": "json3",
+        "quiet": True,
+        "no_warnings": False,
+        "ignore_no_formats_error": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["tv_embedded"]
+            }
+        },
+    }
+
+    if os.path.exists(cookies_path):
+        ydl_opts["cookiefile"] = cookies_path
+        logger.info(f"[fetch_transcript] using cookiefile")
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    subtitles = info.get("subtitles") or {}
+    auto_subs = info.get("automatic_captions") or {}
+
+    logger.info(f"[fetch_transcript] manual subtitle langs: {list(subtitles.keys())[:10]}")
+    logger.info(f"[fetch_transcript] auto-caption langs (first 10): {list(auto_subs.keys())[:10]}")
+
+    # Preferred language prefixes in order (handles codes like en-en-IN, hi-en-IN)
+    preferred_prefixes = ["en-IN", "en", "hi"]
+
+    raw_entries = None
+    matched_lang = None
+
+    # Check manual subtitles first, then auto-captions
+    for source in [subtitles, auto_subs]:
+        for prefix in preferred_prefixes:
+            # Exact match first
+            if prefix in source:
+                raw_entries = source[prefix]
+                matched_lang = prefix
+                break
+            # Prefix match (e.g. "en" matches "en-en-IN")
+            for lang_code in source:
+                if lang_code.startswith(prefix):
+                    raw_entries = source[lang_code]
+                    matched_lang = lang_code
+                    break
+            if raw_entries:
+                break
+        if raw_entries:
+            break
+
+    if not raw_entries:
+        available = list(subtitles.keys()) + list(auto_subs.keys())
+        raise ValueError(f"No en/hi transcript found for video {video_id}. Available: {available[:20]}")
+
+    logger.info(f"[fetch_transcript] using lang: {matched_lang}")
+
+    # Pick json3 format
+    json3_entry = next(
+        (e for e in raw_entries if e.get("ext") == "json3"),
+        raw_entries[0]
+    )
+
+    import urllib.request, json
+    with urllib.request.urlopen(json3_entry["url"]) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    snippets = []
+    for event in data.get("events", []):
+        start_sec = round(event.get("tStartMs", 0) / 1000, 2)
+        text = "".join(seg.get("utf8", "") for seg in event.get("segs", [])).strip()
+        if text and text != "\n":
+            snippets.append(_Snippet(text=text, start=start_sec))
+
+    logger.info(f"[fetch_transcript] extracted {len(snippets)} snippets")
+    return _FetchedTranscript(snippets=snippets)
+
 
 
 def transcript_to_docs(transcription, video_id, chunk_size=500):
@@ -106,8 +190,9 @@ def transcript_to_docs(transcription, video_id, chunk_size=500):
 
 
 def get_embeddings():
-    return HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL
+    return HuggingFaceEndpointEmbeddings(
+        model="sentence-transformers/all-MiniLM-L6-v2",
+        huggingfacehub_api_token=os.getenv("HUGGINGFACE_API_KEY")
     )
 
 
@@ -153,7 +238,6 @@ def ingest_youtube_video(url):
         raise ValueError("YouTube URL is required")
 
     video_id = get_youtube_video_id(url)
-
     if not video_id:
         raise ValueError("Invalid YouTube URL")
 
@@ -162,22 +246,26 @@ def ingest_youtube_video(url):
 
     embeddings = get_embeddings()
     pc = get_pinecone_client()
-
     index_name = get_index_name(video_id)
 
-    is_new_index = create_index_if_not_exists(pc, index_name)
+    # Ensure index exists
+    create_index_if_not_exists(pc, index_name)
 
     vectorstore = get_vectorstore(index_name, embeddings)
 
-    if is_new_index:
+    # CHECK: Does the index actually have data?
+    index_stats = pc.Index(index_name).describe_index_stats()
+    if index_stats['total_vector_count'] == 0:
+        logger.info(f"Index {index_name} is empty. Ingesting {len(docs)} documents...")
         vectorstore.add_documents(docs)
+    else:
+        logger.info(f"Index {index_name} already contains data. Skipping ingestion.")
 
     return {
         "video_id": video_id,
         "index_name": index_name,
-        "status": "created" if is_new_index else "already_exists"
+        "status": "processed"
     }
-
 
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
