@@ -1,3 +1,7 @@
 __pycache__/
 .env*
 yt_trans_env/
+
+# Sensitive files — never commit these
+*cookies*.txt
+*.cookies.txt

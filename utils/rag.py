@@ -43,7 +43,19 @@ def get_youtube_video_id(url):
 
 
 def fetch_transcript(video_id):
-    ytt_api = YouTubeTranscriptApi()
+    # On cloud hosts (AWS, GCP, etc.) YouTube blocks requests by IP.
+    # Authenticating with a cookies file lets requests pass through.
+    cookies_path = os.environ.get(
+        "YOUTUBE_COOKIES_PATH",
+        os.path.join(os.path.dirname(__file__), "youtube_cookies.txt")
+    )
+
+    if os.path.exists(cookies_path):
+        ytt_api = YouTubeTranscriptApi(cookie_path=cookies_path)
+    else:
+        # Fallback — will work locally but may fail on cloud IPs
+        ytt_api = YouTubeTranscriptApi()
+
     return ytt_api.fetch(video_id, languages=["en-IN", "en", "hi"])
 
 
