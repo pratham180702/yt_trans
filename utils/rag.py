@@ -3,6 +3,7 @@ from langchain_groq import ChatGroq
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import *
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 load_dotenv()
@@ -12,7 +13,6 @@ from pinecone import Pinecone, ServerlessSpec
 from urllib.parse import urlparse, parse_qs
 import os
 import time
-import requests
 
 INDEX_PREFIX = "youtube-rag-index"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -31,17 +31,24 @@ def get_youtube_video_id(url):
 
 def fetch_transcript(video_id):
     # On cloud hosts (AWS, GCP, etc.) YouTube blocks datacenter IPs.
-    # Use a residential proxy via YOUTUBE_PROXY_URL env var to bypass this.
-    # Format: http://username:password@proxy-host:port
+    # Option 1: Set WEBSHARE_USERNAME + WEBSHARE_PASSWORD for Webshare residential proxies
+    # Option 2: Set YOUTUBE_PROXY_URL=http://user:pass@host:port for any generic proxy
+    webshare_user = os.environ.get("WEBSHARE_USERNAME")
+    webshare_pass = os.environ.get("WEBSHARE_PASSWORD")
     proxy_url = os.environ.get("YOUTUBE_PROXY_URL")
 
-    if proxy_url:
-        session = requests.Session()
-        session.proxies.update({
-            "http": proxy_url,
-            "https": proxy_url,
-        })
-        ytt_api = YouTubeTranscriptApi(http_client=session)
+    if webshare_user and webshare_pass:
+        proxy_config = WebshareProxyConfig(
+            proxy_username=webshare_user,
+            proxy_password=webshare_pass,
+        )
+        ytt_api = YouTubeTranscriptApi(proxies=proxy_config)
+    elif proxy_url:
+        proxy_config = GenericProxyConfig(
+            http=proxy_url,
+            https=proxy_url,
+        )
+        ytt_api = YouTubeTranscriptApi(proxies=proxy_config)
     else:
         # No proxy — works locally, but will be blocked on most cloud IPs
         ytt_api = YouTubeTranscriptApi()
