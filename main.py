@@ -1,5 +1,7 @@
 # main.py
+import logging
 
+_logger = logging.getLogger(__name__)
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -44,8 +46,9 @@ def get_chat_history(bot_id, limit=10):
     history = []
 
     for msg in messages:
-        role = msg["role"]          # user / assistant
-        content = msg["content"]
+        _logger.info(f"msg is {msg}")
+        role = msg[0]          # user / assistant
+        content = msg[1]
 
         if role == "user":
             history.append(f"User: {content}")
