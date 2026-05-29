@@ -1,11 +1,28 @@
+# Web framework & API
+fastapi
+uvicorn[standard]
+
+# Frontend
+streamlit
+requests
+
+# LangChain stack
 langchain-core
 langchain-groq
-youtube-transcript-api
-python-dotenv
 langchain-huggingface
-sentence-transformers
 langchain-pinecone
+
+# Vector DB
 pinecone
-torch
+
+# Embeddings & ML
+sentence-transformers
 transformers
+torch
 huggingface-hub
+
+# YouTube transcript
+youtube-transcript-api
+
+# Utilities
+python-dotenv
